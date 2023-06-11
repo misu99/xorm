@@ -330,9 +330,9 @@ func (db *mysql) SQLType(c *schemas.Column) string {
 	}
 
 	if hasLen2 {
-		res += "(" + strconv.Itoa(c.Length) + "," + strconv.Itoa(c.Length2) + ")"
+		res += "(" + strconv.FormatInt(c.Length, 10) + "," + strconv.FormatInt(c.Length2, 10) + ")"
 	} else if hasLen1 {
-		res += "(" + strconv.Itoa(c.Length) + ")"
+		res += "(" + strconv.FormatInt(c.Length, 10) + ")"
 	}
 
 	if isUnsigned {
@@ -381,11 +381,17 @@ func (db *mysql) IsTableExist(queryer core.Queryer, ctx context.Context, tableNa
 func (db *mysql) AddColumnSQL(tableName string, col *schemas.Column) string {
 	quoter := db.dialect.Quoter()
 	s, _ := ColumnString(db, col, true)
-	sql := fmt.Sprintf("ALTER TABLE %v ADD %v", quoter.Quote(tableName), s)
+	var b strings.Builder
+	b.WriteString("ALTER TABLE ")
+	quoter.QuoteTo(&b, tableName)
+	b.WriteString(" ADD ")
+	b.WriteString(s)
 	if len(col.Comment) > 0 {
-		sql += " COMMENT '" + col.Comment + "'"
+		b.WriteString(" COMMENT '")
+		b.WriteString(col.Comment)
+		b.WriteString("'")
 	}
-	return sql
+	return b.String()
 }
 
 func (db *mysql) GetColumns(queryer core.Queryer, ctx context.Context, tableName string) ([]string, map[string]*schemas.Column, error) {
@@ -400,7 +406,7 @@ func (db *mysql) GetColumns(queryer core.Queryer, ctx context.Context, tableName
 		" `COLUMN_KEY`, `EXTRA`, `COLUMN_COMMENT`, `CHARACTER_MAXIMUM_LENGTH`, " +
 		alreadyQuoted + " AS NEEDS_QUOTE " +
 		"FROM `INFORMATION_SCHEMA`.`COLUMNS` WHERE `TABLE_SCHEMA` = ? AND `TABLE_NAME` = ?" +
-		" ORDER BY `COLUMNS`.ORDINAL_POSITION"
+		" ORDER BY `COLUMNS`.ORDINAL_POSITION ASC"
 
 	rows, err := queryer.QueryContext(ctx, s, args...)
 	if err != nil {
@@ -444,7 +450,7 @@ func (db *mysql) GetColumns(queryer core.Queryer, ctx context.Context, tableName
 		// Remove the /* mariadb-5.3 */ suffix from coltypes
 		colName = strings.TrimSuffix(colName, "/* mariadb-5.3 */")
 		colType = strings.ToUpper(colName)
-		var len1, len2 int
+		var len1, len2 int64
 		if len(cts) == 2 {
 			idx := strings.Index(cts[1], ")")
 			if colType == schemas.Enum && cts[1][0] == '\'' { // enum
@@ -465,12 +471,12 @@ func (db *mysql) GetColumns(queryer core.Queryer, ctx context.Context, tableName
 				}
 			} else {
 				lens := strings.Split(cts[1][0:idx], ",")
-				len1, err = strconv.Atoi(strings.TrimSpace(lens[0]))
+				len1, err = strconv.ParseInt(strings.TrimSpace(lens[0]), 10, 64)
 				if err != nil {
 					return nil, nil, err
 				}
 				if len(lens) == 2 {
-					len2, err = strconv.Atoi(lens[1])
+					len2, err = strconv.ParseInt(lens[1], 10, 64)
 					if err != nil {
 						return nil, nil, err
 					}
@@ -479,7 +485,7 @@ func (db *mysql) GetColumns(queryer core.Queryer, ctx context.Context, tableName
 		} else {
 			switch colType {
 			case "MEDIUMTEXT", "LONGTEXT", "TEXT":
-				len1, err = strconv.Atoi(*maxLength)
+				len1, err = strconv.ParseInt(*maxLength, 10, 64)
 				if err != nil {
 					return nil, nil, err
 				}
@@ -738,8 +744,9 @@ func (p *mysqlDriver) Parse(driverName, dataSourceName string) (*URI, error) {
 }
 
 func (p *mysqlDriver) GenScanResult(colType string) (interface{}, error) {
+	colType = strings.Replace(colType, "UNSIGNED ", "", -1)
 	switch colType {
-	case "CHAR", "VARCHAR", "TINYTEXT", "TEXT", "MEDIUMTEXT", "LONGTEXT", "ENUM", "SET":
+	case "CHAR", "VARCHAR", "TINYTEXT", "TEXT", "MEDIUMTEXT", "LONGTEXT", "ENUM", "SET", "JSON":
 		var s sql.NullString
 		return &s, nil
 	case "BIGINT":

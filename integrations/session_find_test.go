@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"xorm.io/builder"
 	"xorm.io/xorm"
 	"xorm.io/xorm/internal/utils"
 	"xorm.io/xorm/names"
@@ -246,6 +247,10 @@ func TestOrder(t *testing.T) {
 
 	users2 := make([]Userinfo, 0)
 	err = testEngine.Asc("id", "username").Desc("height").Find(&users2)
+	assert.NoError(t, err)
+
+	users = make([]Userinfo, 0)
+	err = testEngine.OrderBy("CASE WHEN username LIKE ? THEN 0 ELSE 1 END DESC", "a").Find(&users)
 	assert.NoError(t, err)
 }
 
@@ -960,6 +965,10 @@ func TestFindJoin(t *testing.T) {
 
 	scenes = make([]SceneItem, 0)
 	err = testEngine.Join("INNER", "order", "`scene_item`.`device_id`=`order`.`id`").Find(&scenes)
+	assert.NoError(t, err)
+
+	scenes = make([]SceneItem, 0)
+	err = testEngine.Join("INNER", "order", builder.Expr("`scene_item`.`device_id`=`order`.`id`")).Find(&scenes)
 	assert.NoError(t, err)
 }
 

@@ -275,8 +275,8 @@ func (session *Session) Limit(limit int, start ...int) *Session {
 
 // OrderBy provide order by query condition, the input parameter is the content
 // after order by on a sql statement.
-func (session *Session) OrderBy(order string) *Session {
-	session.statement.OrderBy(order)
+func (session *Session) OrderBy(order interface{}, args ...interface{}) *Session {
+	session.statement.OrderBy(order, args...)
 	return session
 }
 
@@ -330,7 +330,7 @@ func (session *Session) NoCache() *Session {
 }
 
 // Join join_operator should be one of INNER, LEFT OUTER, CROSS etc - this will be prepended to JOIN
-func (session *Session) Join(joinOperator string, tablename interface{}, condition string, args ...interface{}) *Session {
+func (session *Session) Join(joinOperator string, tablename interface{}, condition interface{}, args ...interface{}) *Session {
 	session.statement.Join(joinOperator, tablename, condition, args...)
 	return session
 }
@@ -793,4 +793,10 @@ func (session *Session) PingContext(ctx context.Context) error {
 
 	session.engine.logger.Infof("PING DATABASE %v", session.engine.DriverName())
 	return session.DB().PingContext(ctx)
+}
+
+// disable version check
+func (session *Session) NoVersionCheck() *Session {
+	session.statement.CheckVersion = false
+	return session
 }
