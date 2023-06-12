@@ -46,9 +46,10 @@ jobs:
 
     services:
       dameng:
-        image: lunny/dm:v1.0
-        cmd:
-          - /bin/bash
-          - /startDm.sh
+        image: danilaworker/damengdb:8.1.2
+        env:
+          PAGE_SIZE: 16
+          LD_LIBRARY_PATH: /opt/dmdbms/bin
+          INSTANCE_NAME: dm8_01
         ports:
           - 5236:5236
