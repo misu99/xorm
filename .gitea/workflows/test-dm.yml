@@ -41,15 +41,15 @@ jobs:
         env:
           TEST_DAMENG_HOST: "dameng:5236"
           TEST_DAMENG_USERNAME: SYSDBA
-          TEST_DAMENG_PASSWORD: SYSDBA
+          TEST_DAMENG_PASSWORD: SYSDBA001
         run: make test-dameng
 
     services:
       dameng:
-        image: danilaworker/damengdb:8.1.2
+        image: xuxuclassmate/dameng:latest
         env:
           PAGE_SIZE: 16
           LD_LIBRARY_PATH: /opt/dmdbms/bin
-          INSTANCE_NAME: dm8_01
+          INSTANCE_NAME: dm8db
         ports:
           - 5236:5236
