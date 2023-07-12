@@ -39,7 +39,7 @@ jobs:
       - uses: https://github.com/actions/checkout@v3
       - name: test dameng
         env:
-          TEST_DAMENG_HOST: "dameng:5236"
+          TEST_DAMENG_HOST: dameng
           TEST_DAMENG_USERNAME: SYSDBA
           TEST_DAMENG_PASSWORD: SYSDBA001
         run: make test-dameng
