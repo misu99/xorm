@@ -436,7 +436,13 @@ func (statement *Statement) WriteUpdate(updateWriter *builder.BytesWriter, cond 
 		return err
 	}
 
+	// write table name
 	if err := statement.writeUpdateTableName(updateWriter); err != nil {
+		return err
+	}
+
+	// write join
+	if err := statement.writeJoins(updateWriter); err != nil {
 		return err
 	}
 

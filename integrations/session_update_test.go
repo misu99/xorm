@@ -1471,8 +1471,12 @@ func TestNilFromDB(t *testing.T) {
 	assert.NotNil(t, tt4.Field1.cb)
 }
 
-/*
 func TestUpdateWithJoin(t *testing.T) {
+	if testEngine.Dialect().URI().DBType == schemas.SQLITE {
+		t.Skip()
+		return
+	}
+
 	type TestUpdateWithJoin struct {
 		Id    int64
 		ExtId int64
@@ -1500,4 +1504,3 @@ func TestUpdateWithJoin(t *testing.T) {
 		Update(&TestUpdateWithJoin{Name: "test2"})
 	assert.NoError(t, err)
 }
-*/
