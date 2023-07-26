@@ -7,6 +7,7 @@ package tags
 import (
 	"encoding/gob"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"sync"
@@ -20,10 +21,21 @@ import (
 	"xorm.io/xorm/schemas"
 )
 
-var (
-	// ErrUnsupportedType represents an unsupported type error
-	ErrUnsupportedType = errors.New("unsupported type")
-)
+// ErrUnsupportedType represents an unsupported type error
+var ErrUnsupportedType = errors.New("unsupported type")
+
+// TableIndices is an interface that describes structs that provide additional index information above that which is automatically parsed
+type TableIndices interface {
+	TableIndices() []*schemas.Index
+}
+
+var tpTableIndices = reflect.TypeOf((*TableIndices)(nil)).Elem()
+
+type TableCollations interface {
+	TableCollations() []*schemas.Collation
+}
+
+var tpTableCollations = reflect.TypeOf((*TableCollations)(nil)).Elem()
 
 // Parser represents a parser for xorm tag
 type Parser struct {
@@ -124,7 +136,27 @@ func addIndex(indexName string, table *schemas.Table, col *schemas.Column, index
 	}
 }
 
+// ErrIgnoreField represents an error to ignore field
 var ErrIgnoreField = errors.New("field will be ignored")
+
+func (parser *Parser) getSQLTypeByType(t reflect.Type) (schemas.SQLType, error) {
+	if t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+	if t.Kind() == reflect.Struct {
+		v, ok := parser.tableCache.Load(t)
+		if ok {
+			pkCols := v.(*schemas.Table).PKColumns()
+			if len(pkCols) == 1 {
+				return pkCols[0].SQLType, nil
+			}
+			if len(pkCols) > 1 {
+				return schemas.SQLType{}, fmt.Errorf("unsupported mulitiple primary key on cascade")
+			}
+		}
+	}
+	return schemas.Type2SQLType(t), nil
+}
 
 func (parser *Parser) parseFieldWithNoTag(fieldIndex int, field reflect.StructField, fieldValue reflect.Value) (*schemas.Column, error) {
 	var sqlType schemas.SQLType
@@ -136,7 +168,11 @@ func (parser *Parser) parseFieldWithNoTag(fieldIndex int, field reflect.StructFi
 	if _, ok := fieldValue.Interface().(convert.Conversion); ok {
 		sqlType = schemas.SQLType{Name: schemas.Text}
 	} else {
-		sqlType = schemas.Type2SQLType(field.Type)
+		var err error
+		sqlType, err = parser.getSQLTypeByType(field.Type)
+		if err != nil {
+			return nil, err
+		}
 	}
 	col := schemas.NewColumn(parser.columnMapper.Obj2Table(field.Name),
 		field.Name, sqlType, sqlType.DefaultLength,
@@ -152,7 +188,7 @@ func (parser *Parser) parseFieldWithNoTag(fieldIndex int, field reflect.StructFi
 }
 
 func (parser *Parser) parseFieldWithTags(table *schemas.Table, fieldIndex int, field reflect.StructField, fieldValue reflect.Value, tags []tag) (*schemas.Column, error) {
-	var col = &schemas.Column{
+	col := &schemas.Column{
 		FieldName:       field.Name,
 		FieldIndex:      []int{fieldIndex},
 		Nullable:        true,
@@ -163,7 +199,7 @@ func (parser *Parser) parseFieldWithTags(table *schemas.Table, fieldIndex int, f
 		DefaultIsEmpty:  true,
 	}
 
-	var ctx = Context{
+	ctx := Context{
 		table:      table,
 		col:        col,
 		fieldValue: fieldValue,
@@ -214,8 +250,16 @@ func (parser *Parser) parseFieldWithTags(table *schemas.Table, fieldIndex int, f
 	}
 
 	if col.SQLType.Name == "" {
-		col.SQLType = schemas.Type2SQLType(field.Type)
+		var err error
+		col.SQLType, err = parser.getSQLTypeByType(field.Type)
+		if err != nil {
+			return nil, err
+		}
 	}
+	if ctx.isUnsigned && col.SQLType.IsNumeric() && !strings.HasPrefix(col.SQLType.Name, "UNSIGNED") {
+		col.SQLType.Name = "UNSIGNED " + col.SQLType.Name
+	}
+
 	parser.dialect.SQLType(col)
 	if col.Length == 0 {
 		col.Length = col.SQLType.DefaultLength
@@ -241,6 +285,10 @@ func (parser *Parser) parseFieldWithTags(table *schemas.Table, fieldIndex int, f
 }
 
 func (parser *Parser) parseField(table *schemas.Table, fieldIndex int, field reflect.StructField, fieldValue reflect.Value) (*schemas.Column, error) {
+	if isNotTitle(field.Name) {
+		return nil, ErrIgnoreField
+	}
+
 	var (
 		tag       = field.Tag
 		ormTagStr = strings.TrimSpace(tag.Get(parser.identifier))
@@ -279,14 +327,10 @@ func (parser *Parser) Parse(v reflect.Value) (*schemas.Table, error) {
 	table := schemas.NewEmptyTable()
 	table.Type = t
 	table.Name = names.GetTableName(parser.tableMapper, v)
+	table.Comment = names.GetTableComment(v)
 
 	for i := 0; i < t.NumField(); i++ {
-		var field = t.Field(i)
-		if isNotTitle(field.Name) {
-			continue
-		}
-
-		col, err := parser.parseField(table, i, field, v.Field(i))
+		col, err := parser.parseField(table, i, t.Field(i), v.Field(i))
 		if err == ErrIgnoreField {
 			continue
 		} else if err != nil {
@@ -296,11 +340,81 @@ func (parser *Parser) Parse(v reflect.Value) (*schemas.Table, error) {
 		table.AddColumn(col)
 	} // end for
 
-	deletedColumn := table.DeletedColumn()
-	// check columns
-	if deletedColumn != nil {
-		deletedColumn.Nullable = true
+	indices := tableIndices(v)
+	for _, index := range indices {
+		// Override old information
+		if oldIndex, ok := table.Indexes[index.Name]; ok {
+			for _, colName := range oldIndex.Cols {
+				col := table.GetColumn(colName)
+				if col == nil {
+					return nil, ErrUnsupportedType
+				}
+				delete(col.Indexes, index.Name)
+			}
+		}
+		table.AddIndex(index)
+		for _, colName := range index.Cols {
+			col := table.GetColumn(colName)
+			if col == nil {
+				return nil, ErrUnsupportedType
+			}
+			col.Indexes[index.Name] = index.Type
+		}
+	}
+
+	collations := tableCollations(v)
+	for _, collation := range collations {
+		if collation.Name == "" {
+			continue
+		}
+		if collation.Column == "" {
+			table.Collation = collation.Name
+		} else {
+			col := table.GetColumn(collation.Column)
+			if col == nil {
+				return nil, ErrUnsupportedType
+			}
+			col.Collation = collation.Name // this may override definition in struct tag
+		}
 	}
 
 	return table, nil
+}
+
+func tableIndices(v reflect.Value) []*schemas.Index {
+	if v.Type().Implements(tpTableIndices) {
+		return v.Interface().(TableIndices).TableIndices()
+	}
+
+	if v.Kind() == reflect.Ptr {
+		v = v.Elem()
+		if v.Type().Implements(tpTableIndices) {
+			return v.Interface().(TableIndices).TableIndices()
+		}
+	} else if v.CanAddr() {
+		v1 := v.Addr()
+		if v1.Type().Implements(tpTableIndices) {
+			return v1.Interface().(TableIndices).TableIndices()
+		}
+	}
+	return nil
+}
+
+func tableCollations(v reflect.Value) []*schemas.Collation {
+	if v.Type().Implements(tpTableCollations) {
+		return v.Interface().(TableCollations).TableCollations()
+	}
+
+	if v.Kind() == reflect.Ptr {
+		v = v.Elem()
+		if v.Type().Implements(tpTableCollations) {
+			return v.Interface().(TableCollations).TableCollations()
+		}
+	} else if v.CanAddr() {
+		v1 := v.Addr()
+		if v1.Type().Implements(tpTableCollations) {
+			return v1.Interface().(TableCollations).TableCollations()
+		}
+	}
+	return nil
 }

@@ -778,10 +778,22 @@ var (
 var (
 	// DefaultPostgresSchema default postgres schema
 	DefaultPostgresSchema = "public"
+	postgresColAliases    = map[string]string{
+		"numeric": "decimal",
+	}
 )
 
 type postgres struct {
 	Base
+}
+
+// Alias returns a alias of column
+func (db *postgres) Alias(col string) string {
+	v, ok := postgresColAliases[strings.ToLower(col)]
+	if ok {
+		return v
+	}
+	return col
 }
 
 func (db *postgres) Init(uri *URI) error {
@@ -798,7 +810,10 @@ func (db *postgres) Version(ctx context.Context, queryer core.Queryer) (*schemas
 
 	var version string
 	if !rows.Next() {
-		return nil, errors.New("Unknow version")
+		if rows.Err() != nil {
+			return nil, rows.Err()
+		}
+		return nil, errors.New("unknow version")
 	}
 
 	if err := rows.Scan(&version); err != nil {
@@ -847,11 +862,11 @@ func (db *postgres) needQuote(name string) bool {
 func (db *postgres) SetQuotePolicy(quotePolicy QuotePolicy) {
 	switch quotePolicy {
 	case QuotePolicyNone:
-		var q = postgresQuoter
+		q := postgresQuoter
 		q.IsReserved = schemas.AlwaysNoReserve
 		db.quoter = q
 	case QuotePolicyReserved:
-		var q = postgresQuoter
+		q := postgresQuoter
 		q.IsReserved = db.needQuote
 		db.quoter = q
 	case QuotePolicyAlways:
@@ -861,21 +876,16 @@ func (db *postgres) SetQuotePolicy(quotePolicy QuotePolicy) {
 	}
 }
 
-// FormatBytes formats bytes
-func (db *postgres) FormatBytes(bs []byte) string {
-	return fmt.Sprintf("E'\\x%x'", bs)
-}
-
 func (db *postgres) SQLType(c *schemas.Column) string {
 	var res string
 	switch t := c.SQLType.Name; t {
-	case schemas.TinyInt:
+	case schemas.TinyInt, schemas.UnsignedTinyInt:
 		res = schemas.SmallInt
 		return res
 	case schemas.Bit:
 		res = schemas.Boolean
 		return res
-	case schemas.MediumInt, schemas.Int, schemas.Integer:
+	case schemas.MediumInt, schemas.Int, schemas.Integer, schemas.UnsignedMediumInt, schemas.UnsignedSmallInt:
 		if c.IsAutoIncrement {
 			return schemas.Serial
 		}
@@ -924,11 +934,32 @@ func (db *postgres) SQLType(c *schemas.Column) string {
 	hasLen2 := (c.Length2 > 0)
 
 	if hasLen2 {
-		res += "(" + strconv.Itoa(c.Length) + "," + strconv.Itoa(c.Length2) + ")"
+		res += "(" + strconv.FormatInt(c.Length, 10) + "," + strconv.FormatInt(c.Length2, 10) + ")"
 	} else if hasLen1 {
-		res += "(" + strconv.Itoa(c.Length) + ")"
+		res += "(" + strconv.FormatInt(c.Length, 10) + ")"
 	}
 	return res
+}
+
+func (db *postgres) Features() *DialectFeatures {
+	return &DialectFeatures{
+		AutoincrMode: IncrAutoincrMode,
+	}
+}
+
+func (db *postgres) ColumnTypeKind(t string) int {
+	switch strings.ToUpper(t) {
+	case "DATETIME", "TIMESTAMP":
+		return schemas.TIME_TYPE
+	case "VARCHAR", "TEXT":
+		return schemas.TEXT_TYPE
+	case "BIGINT", "BIGSERIAL", "SMALLINT", "INT", "INT8", "INT4", "INTEGER", "SERIAL", "FLOAT", "FLOAT4", "REAL", "DOUBLE PRECISION":
+		return schemas.NUMERIC_TYPE
+	case "BOOL":
+		return schemas.BOOL_TYPE
+	default:
+		return schemas.UNKNOW_TYPE
+	}
 }
 
 func (db *postgres) IsReserved(name string) bool {
@@ -938,41 +969,6 @@ func (db *postgres) IsReserved(name string) bool {
 
 func (db *postgres) AutoIncrStr() string {
 	return ""
-}
-
-func (db *postgres) CreateTableSQL(table *schemas.Table, tableName string) ([]string, bool) {
-	var sql string
-	sql = "CREATE TABLE IF NOT EXISTS "
-	if tableName == "" {
-		tableName = table.Name
-	}
-
-	quoter := db.Quoter()
-	sql += quoter.Quote(tableName)
-	sql += " ("
-
-	if len(table.ColumnsSeq()) > 0 {
-		pkList := table.PrimaryKeys
-
-		for _, colName := range table.ColumnsSeq() {
-			col := table.GetColumn(colName)
-			s, _ := ColumnString(db, col, col.IsPrimaryKey && len(pkList) == 1)
-			sql += s
-			sql = strings.TrimSpace(sql)
-			sql += ", "
-		}
-
-		if len(pkList) > 1 {
-			sql += "PRIMARY KEY ( "
-			sql += quoter.Join(pkList, ",")
-			sql += " ), "
-		}
-
-		sql = sql[:len(sql)-2]
-	}
-	sql += ")"
-
-	return []string{sql}, true
 }
 
 func (db *postgres) IndexCheckSQL(tableName, idxName string) (string, []interface{}) {
@@ -995,13 +991,37 @@ func (db *postgres) IsTableExist(queryer core.Queryer, ctx context.Context, tabl
 		db.getSchema(), tableName)
 }
 
-func (db *postgres) ModifyColumnSQL(tableName string, col *schemas.Column) string {
+func (db *postgres) AddColumnSQL(tableName string, col *schemas.Column) string {
+	s, _ := ColumnString(db.dialect, col, true, false)
+
+	quoter := db.dialect.Quoter()
+	addColumnSQL := ""
+	commentSQL := "; "
 	if len(db.getSchema()) == 0 || strings.Contains(tableName, ".") {
-		return fmt.Sprintf("alter table %s ALTER COLUMN %s TYPE %s",
-			tableName, col.Name, db.SQLType(col))
+		addColumnSQL = fmt.Sprintf("ALTER TABLE %s ADD %s", quoter.Quote(tableName), s)
+		commentSQL += fmt.Sprintf("COMMENT ON COLUMN %s.%s IS '%s'", quoter.Quote(tableName), quoter.Quote(col.Name), col.Comment)
+		return addColumnSQL + commentSQL
 	}
-	return fmt.Sprintf("alter table %s.%s ALTER COLUMN %s TYPE %s",
-		db.getSchema(), tableName, col.Name, db.SQLType(col))
+
+	addColumnSQL = fmt.Sprintf("ALTER TABLE %s.%s ADD %s", quoter.Quote(db.getSchema()), quoter.Quote(tableName), s)
+	commentSQL += fmt.Sprintf("COMMENT ON COLUMN %s.%s.%s IS '%s'", quoter.Quote(db.getSchema()), quoter.Quote(tableName), quoter.Quote(col.Name), col.Comment)
+	return addColumnSQL + commentSQL
+}
+
+func (db *postgres) ModifyColumnSQL(tableName string, col *schemas.Column) string {
+	quoter := db.dialect.Quoter()
+	modifyColumnSQL := ""
+	commentSQL := "; "
+
+	if len(db.getSchema()) == 0 || strings.Contains(tableName, ".") {
+		modifyColumnSQL = fmt.Sprintf("ALTER TABLE %s ALTER COLUMN %s TYPE %s", quoter.Quote(tableName), quoter.Quote(col.Name), db.SQLType(col))
+		commentSQL += fmt.Sprintf("COMMENT ON COLUMN %s.%s IS '%s'", quoter.Quote(tableName), quoter.Quote(col.Name), col.Comment)
+		return modifyColumnSQL + commentSQL
+	}
+
+	modifyColumnSQL = fmt.Sprintf("ALTER TABLE %s.%s ALTER COLUMN %s TYPE %s", quoter.Quote(db.getSchema()), quoter.Quote(tableName), quoter.Quote(col.Name), db.SQLType(col))
+	commentSQL += fmt.Sprintf("COMMENT ON COLUMN %s.%s.%s IS '%s'", quoter.Quote(db.getSchema()), quoter.Quote(tableName), quoter.Quote(col.Name), col.Comment)
+	return modifyColumnSQL + commentSQL
 }
 
 func (db *postgres) DropIndexSQL(tableName string, index *schemas.Index) string {
@@ -1010,11 +1030,10 @@ func (db *postgres) DropIndexSQL(tableName string, index *schemas.Index) string 
 	tableParts := strings.Split(strings.Replace(tableName, `"`, "", -1), ".")
 	tableName = tableParts[len(tableParts)-1]
 
-	if !strings.HasPrefix(idxName, "UQE_") &&
-		!strings.HasPrefix(idxName, "IDX_") {
-		if index.Type == schemas.UniqueType {
+	if index.IsRegular {
+		if index.Type == schemas.UniqueType && !strings.HasPrefix(idxName, "UQE_") {
 			idxName = fmt.Sprintf("UQE_%v_%v", tableName, index.Name)
-		} else {
+		} else if index.Type == schemas.IndexType && !strings.HasPrefix(idxName, "IDX_") {
 			idxName = fmt.Sprintf("IDX_%v_%v", tableName, index.Name)
 		}
 	}
@@ -1040,7 +1059,10 @@ func (db *postgres) IsColumnExist(queryer core.Queryer, ctx context.Context, tab
 	}
 	defer rows.Close()
 
-	return rows.Next(), nil
+	if rows.Next() {
+		return true, nil
+	}
+	return false, rows.Err()
 }
 
 func (db *postgres) GetColumns(queryer core.Queryer, ctx context.Context, tableName string) ([]string, map[string]*schemas.Column, error) {
@@ -1056,7 +1078,7 @@ FROM pg_attribute f
     LEFT JOIN pg_constraint p ON p.conrelid = c.oid AND f.attnum = ANY (p.conkey)
     LEFT JOIN pg_class AS g ON p.confrelid = g.oid
     LEFT JOIN INFORMATION_SCHEMA.COLUMNS s ON s.column_name=f.attname AND c.relname=s.table_name
-WHERE n.nspname= s.table_schema AND c.relkind = 'r'::char AND c.relname = $1%s AND f.attnum > 0 ORDER BY f.attnum;`
+WHERE n.nspname= s.table_schema AND c.relkind = 'r' AND c.relname = $1%s AND f.attnum > 0 ORDER BY f.attnum;`
 
 	schema := db.getSchema()
 	if schema != "" {
@@ -1087,9 +1109,9 @@ WHERE n.nspname= s.table_schema AND c.relkind = 'r'::char AND c.relname = $1%s A
 			return nil, nil, err
 		}
 
-		var maxLen int
+		var maxLen int64
 		if maxLenStr != nil {
-			maxLen, err = strconv.Atoi(*maxLenStr)
+			maxLen, err = strconv.ParseInt(*maxLenStr, 10, 64)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -1102,7 +1124,7 @@ WHERE n.nspname= s.table_schema AND c.relkind = 'r'::char AND c.relname = $1%s A
 		col.Name = strings.Trim(colName, `" `)
 
 		if colDefault != nil {
-			var theDefault = *colDefault
+			theDefault := *colDefault
 			// cockroach has type with the default value with :::
 			// and postgres with ::, we should remove them before store them
 			idx := strings.Index(theDefault, ":::")
@@ -1163,14 +1185,14 @@ WHERE n.nspname= s.table_schema AND c.relkind = 'r'::char AND c.relname = $1%s A
 			startIdx := strings.Index(strings.ToLower(dataType), "string(")
 			if startIdx != -1 && strings.HasSuffix(dataType, ")") {
 				length := dataType[startIdx+8 : len(dataType)-1]
-				l, _ := strconv.Atoi(length)
+				l, _ := strconv.ParseInt(length, 10, 64)
 				col.SQLType = schemas.SQLType{Name: "STRING", DefaultLength: l, DefaultLength2: 0}
 			} else {
 				col.SQLType = schemas.SQLType{Name: strings.ToUpper(dataType), DefaultLength: 0, DefaultLength2: 0}
 			}
 		}
 		if _, ok := schemas.SqlTypes[col.SQLType.Name]; !ok {
-			return nil, nil, fmt.Errorf("Unknown colType: %s - %s", dataType, col.SQLType.Name)
+			return nil, nil, fmt.Errorf("unknown colType: %s - %s", dataType, col.SQLType.Name)
 		}
 
 		col.Length = maxLen
@@ -1178,18 +1200,19 @@ WHERE n.nspname= s.table_schema AND c.relkind = 'r'::char AND c.relname = $1%s A
 		if !col.DefaultIsEmpty {
 			if col.SQLType.IsText() {
 				if strings.HasSuffix(col.Default, "::character varying") {
-					col.Default = strings.TrimRight(col.Default, "::character varying")
+					col.Default = strings.TrimSuffix(col.Default, "::character varying")
 				} else if !strings.HasPrefix(col.Default, "'") {
 					col.Default = "'" + col.Default + "'"
 				}
 			} else if col.SQLType.IsTime() {
-				if strings.HasSuffix(col.Default, "::timestamp without time zone") {
-					col.Default = strings.TrimRight(col.Default, "::timestamp without time zone")
-				}
+				col.Default = strings.TrimSuffix(col.Default, "::timestamp without time zone")
 			}
 		}
 		cols[col.Name] = col
 		colSeq = append(colSeq, col.Name)
+	}
+	if rows.Err() != nil {
+		return nil, nil, rows.Err()
 	}
 
 	return colSeq, cols, nil
@@ -1221,6 +1244,9 @@ func (db *postgres) GetTables(queryer core.Queryer, ctx context.Context) ([]*sch
 		table.Name = name
 		tables = append(tables, table)
 	}
+	if rows.Err() != nil {
+		return nil, rows.Err()
+	}
 	return tables, nil
 }
 
@@ -1237,10 +1263,10 @@ func getIndexColName(indexdef string) []string {
 
 func (db *postgres) GetIndexes(queryer core.Queryer, ctx context.Context, tableName string) (map[string]*schemas.Index, error) {
 	args := []interface{}{tableName}
-	s := fmt.Sprintf("SELECT indexname, indexdef FROM pg_indexes WHERE tablename=$1")
+	s := "SELECT indexname, indexdef FROM pg_indexes WHERE tablename=$1"
 	if len(db.getSchema()) != 0 {
 		args = append(args, db.getSchema())
-		s = s + " AND schemaname=$2"
+		s += " AND schemaname=$2"
 	}
 
 	rows, err := queryer.QueryContext(ctx, s, args...)
@@ -1249,7 +1275,7 @@ func (db *postgres) GetIndexes(queryer core.Queryer, ctx context.Context, tableN
 	}
 	defer rows.Close()
 
-	indexes := make(map[string]*schemas.Index, 0)
+	indexes := make(map[string]*schemas.Index)
 	for rows.Next() {
 		var indexType int
 		var indexName, indexdef string
@@ -1273,6 +1299,12 @@ func (db *postgres) GetIndexes(queryer core.Queryer, ctx context.Context, tableN
 			indexType = schemas.IndexType
 		}
 		colNames = getIndexColName(indexdef)
+
+		// Oid It's a special index. You can't put it in. TODO: This is not perfect.
+		if indexName == tableName+"_oid_index" && len(colNames) == 1 && colNames[0] == "oid" {
+			continue
+		}
+
 		var isRegular bool
 		if strings.HasPrefix(indexName, "IDX_"+tableName) || strings.HasPrefix(indexName, "UQE_"+tableName) {
 			newIdxName := indexName[5+len(tableName):]
@@ -1291,32 +1323,49 @@ func (db *postgres) GetIndexes(queryer core.Queryer, ctx context.Context, tableN
 		index.IsRegular = isRegular
 		indexes[index.Name] = index
 	}
+	if rows.Err() != nil {
+		return nil, rows.Err()
+	}
 	return indexes, nil
 }
 
+func (db *postgres) CreateTableSQL(ctx context.Context, queryer core.Queryer, table *schemas.Table, tableName string) (string, bool, error) {
+	quoter := db.dialect.Quoter()
+	if len(db.getSchema()) != 0 && !strings.Contains(tableName, ".") {
+		tableName = fmt.Sprintf("%s.%s", db.getSchema(), tableName)
+	}
+
+	createTableSQL, ok, err := db.Base.CreateTableSQL(ctx, queryer, table, tableName)
+	if err != nil {
+		return "", ok, err
+	}
+
+	commentSQL := "; "
+	if table.Comment != "" {
+		// support schema.table -> "schema"."table"
+		commentSQL += fmt.Sprintf("COMMENT ON TABLE %s IS '%s'; ", quoter.Quote(tableName), table.Comment)
+	}
+
+	for _, colName := range table.ColumnsSeq() {
+		col := table.GetColumn(colName)
+
+		if len(col.Comment) > 0 {
+			commentSQL += fmt.Sprintf("COMMENT ON COLUMN %s.%s IS '%s'; ", quoter.Quote(tableName), quoter.Quote(col.Name), col.Comment)
+		}
+	}
+
+	return createTableSQL + commentSQL, true, nil
+}
+
 func (db *postgres) Filters() []Filter {
-	return []Filter{&SeqFilter{Prefix: "$", Start: 1}}
+	return []Filter{&postgresSeqFilter{Prefix: "$", Start: 1}}
 }
 
 type pqDriver struct {
 	baseDriver
 }
 
-func (b *pqDriver) Features() DriverFeatures {
-	return DriverFeatures{
-		SupportNullable: false,
-	}
-}
-
 type values map[string]string
-
-func (vs values) Set(k, v string) {
-	vs[k] = v
-}
-
-func (vs values) Get(k string) (v string) {
-	return vs[k]
-}
 
 func parseURL(connstr string) (string, error) {
 	u, err := url.Parse(connstr)
@@ -1337,30 +1386,94 @@ func parseURL(connstr string) (string, error) {
 	return "", nil
 }
 
-func parseOpts(name string, o values) error {
-	if len(name) == 0 {
-		return fmt.Errorf("invalid options: %s", name)
+func parseOpts(urlStr string, o values) error {
+	if len(urlStr) == 0 {
+		return fmt.Errorf("invalid options: %s", urlStr)
 	}
 
-	name = strings.TrimSpace(name)
+	urlStr = strings.TrimSpace(urlStr)
 
-	ps := strings.Split(name, " ")
-	for _, p := range ps {
-		kv := strings.Split(p, "=")
-		if len(kv) < 2 {
-			return fmt.Errorf("invalid option: %q", p)
+	var (
+		inQuote bool
+		state   int // 0 key, 1 space, 2 value, 3 equal
+		start   int
+		key     string
+	)
+	for i, c := range urlStr {
+		switch c {
+		case ' ':
+			if !inQuote {
+				if state == 2 {
+					state = 1
+					v := urlStr[start:i]
+					if strings.HasPrefix(v, "'") && strings.HasSuffix(v, "'") {
+						v = v[1 : len(v)-1]
+					} else if strings.HasPrefix(v, "'") || strings.HasSuffix(v, "'") {
+						return fmt.Errorf("wrong single quote in %d of %s", i, urlStr)
+					}
+					o[key] = v
+				} else if state != 1 {
+					return fmt.Errorf("wrong format: %v", urlStr)
+				}
+			}
+		case '\'':
+			if state == 3 {
+				state = 2
+				start = i
+			} else if state != 2 {
+				return fmt.Errorf("wrong format: %v", urlStr)
+			}
+			inQuote = !inQuote
+		case '=':
+			if !inQuote {
+				if state != 0 {
+					return fmt.Errorf("wrong format: %v", urlStr)
+				}
+				key = urlStr[start:i]
+				state = 3
+			}
+		default:
+			if state == 3 {
+				state = 2
+				start = i
+			} else if state == 1 {
+				state = 0
+				start = i
+			}
 		}
-		o.Set(kv[0], kv[1])
+
+		if i == len(urlStr)-1 {
+			if state != 2 {
+				return errors.New("no value matched key")
+			}
+			v := urlStr[start : i+1]
+			if strings.HasPrefix(v, "'") && strings.HasSuffix(v, "'") {
+				v = v[1 : len(v)-1]
+			} else if strings.HasPrefix(v, "'") || strings.HasSuffix(v, "'") {
+				return fmt.Errorf("wrong single quote in %d of %s", i, urlStr)
+			}
+			o[key] = v
+		}
 	}
 
 	return nil
 }
 
+func (p *pqDriver) Features() *DriverFeatures {
+	return &DriverFeatures{
+		SupportReturnInsertedID: false,
+	}
+}
+
 func (p *pqDriver) Parse(driverName, dataSourceName string) (*URI, error) {
 	db := &URI{DBType: schemas.POSTGRES}
-	var err error
 
-	if strings.HasPrefix(dataSourceName, "postgresql://") || strings.HasPrefix(dataSourceName, "postgres://") {
+	var err error
+	if strings.Contains(dataSourceName, "://") {
+		if !strings.HasPrefix(dataSourceName, "postgresql://") && !strings.HasPrefix(dataSourceName, "postgres://") {
+			return nil, fmt.Errorf("unsupported protocol %v", dataSourceName)
+		}
+
 		db.DBName, err = parseURL(dataSourceName)
 		if err != nil {
 			return nil, err
@@ -1372,7 +1485,7 @@ func (p *pqDriver) Parse(driverName, dataSourceName string) (*URI, error) {
 			return nil, err
 		}
 
-		db.DBName = o.Get("dbname")
+		db.DBName = o["dbname"]
 	}
 
 	if db.DBName == "" {
@@ -1387,26 +1500,22 @@ func (p *pqDriver) GenScanResult(colType string) (interface{}, error) {
 	case "VARCHAR", "TEXT":
 		var s sql.NullString
 		return &s, nil
-	case "BIGINT":
+	case "BIGINT", "BIGSERIAL":
 		var s sql.NullInt64
 		return &s, nil
-	case "TINYINT", "INT", "INT8", "INT4":
+	case "SMALLINT", "INT", "INT8", "INT4", "INTEGER", "SERIAL":
 		var s sql.NullInt32
 		return &s, nil
-	case "FLOAT", "FLOAT4":
+	case "FLOAT", "FLOAT4", "REAL", "DOUBLE PRECISION":
 		var s sql.NullFloat64
 		return &s, nil
 	case "DATETIME", "TIMESTAMP":
 		var s sql.NullTime
 		return &s, nil
-	case "BIT":
-		var s sql.RawBytes
-		return &s, nil
 	case "BOOL":
 		var s sql.NullBool
 		return &s, nil
 	default:
-		fmt.Printf("unknow postgres database type: %v\n", colType)
 		var r sql.RawBytes
 		return &r, nil
 	}
@@ -1439,6 +1548,9 @@ func QueryDefaultPostgresSchema(ctx context.Context, queryer core.Queryer) (stri
 		parts := strings.Split(defaultSchema, ",")
 		return strings.TrimSpace(parts[len(parts)-1]), nil
 	}
+	if rows.Err() != nil {
+		return "", rows.Err()
+	}
 
-	return "", errors.New("No default schema")
+	return "", errors.New("no default schema")
 }

@@ -7,21 +7,27 @@ package xorm
 import (
 	"database/sql"
 	"fmt"
+	"math/big"
 	"reflect"
 	"time"
 
 	"xorm.io/xorm/convert"
 	"xorm.io/xorm/core"
 	"xorm.io/xorm/dialects"
+	"xorm.io/xorm/schemas"
 )
 
 // genScanResultsByBeanNullabale generates scan result
 func genScanResultsByBeanNullable(bean interface{}) (interface{}, bool, error) {
 	switch t := bean.(type) {
-	case *sql.NullInt64, *sql.NullBool, *sql.NullFloat64, *sql.NullString, *sql.RawBytes:
+	case *interface{}:
+		return t, false, nil
+	case *sql.NullInt64, *sql.NullBool, *sql.NullFloat64, *sql.NullString, *sql.RawBytes, *[]byte:
 		return t, false, nil
 	case *time.Time:
-		return &sql.NullTime{}, true, nil
+		return &sql.NullString{}, true, nil
+	case *sql.NullTime:
+		return &sql.NullString{}, true, nil
 	case *string:
 		return &sql.NullString{}, true, nil
 	case *int, *int8, *int16, *int32:
@@ -29,9 +35,9 @@ func genScanResultsByBeanNullable(bean interface{}) (interface{}, bool, error) {
 	case *int64:
 		return &sql.NullInt64{}, true, nil
 	case *uint, *uint8, *uint16, *uint32:
-		return &NullUint32{}, true, nil
+		return &convert.NullUint32{}, true, nil
 	case *uint64:
-		return &NullUint64{}, true, nil
+		return &convert.NullUint64{}, true, nil
 	case *float32, *float64:
 		return &sql.NullFloat64{}, true, nil
 	case *bool:
@@ -57,25 +63,28 @@ func genScanResultsByBeanNullable(bean interface{}) (interface{}, bool, error) {
 	case reflect.Int32, reflect.Int, reflect.Int16, reflect.Int8:
 		return &sql.NullInt32{}, true, nil
 	case reflect.Uint64:
-		return &NullUint64{}, true, nil
+		return &convert.NullUint64{}, true, nil
 	case reflect.Uint32, reflect.Uint, reflect.Uint16, reflect.Uint8:
-		return &NullUint32{}, true, nil
+		return &convert.NullUint32{}, true, nil
 	default:
-		return nil, false, fmt.Errorf("unsupported type: %#v", bean)
+		return nil, false, fmt.Errorf("genScanResultsByBeanNullable: unsupported type: %#v", bean)
 	}
 }
 
 func genScanResultsByBean(bean interface{}) (interface{}, bool, error) {
 	switch t := bean.(type) {
+	case *interface{}:
+		return t, false, nil
 	case *sql.NullInt64, *sql.NullBool, *sql.NullFloat64, *sql.NullString,
+		*sql.RawBytes,
 		*string,
 		*int, *int8, *int16, *int32, *int64,
 		*uint, *uint8, *uint16, *uint32, *uint64,
 		*float32, *float64,
 		*bool:
 		return t, false, nil
-	case *time.Time:
-		return &sql.NullTime{}, true, nil
+	case *time.Time, *sql.NullTime:
+		return &sql.NullString{}, true, nil
 	case sql.NullInt64, sql.NullBool, sql.NullFloat64, sql.NullString,
 		time.Time,
 		string,
@@ -116,59 +125,18 @@ func genScanResultsByBean(bean interface{}) (interface{}, bool, error) {
 	case reflect.Float64:
 		return new(float64), true, nil
 	default:
-		return nil, false, fmt.Errorf("unsupported type: %#v", bean)
+		return nil, false, fmt.Errorf("genScanResultsByBean: unsupported type: %#v", bean)
 	}
 }
 
-func row2mapStr(rows *core.Rows, types []*sql.ColumnType, fields []string) (map[string]string, error) {
-	var scanResults = make([]interface{}, len(fields))
-	for i := 0; i < len(fields); i++ {
-		var s sql.NullString
-		scanResults[i] = &s
-	}
-
-	if err := rows.Scan(scanResults...); err != nil {
-		return nil, err
-	}
-
-	result := make(map[string]string, len(fields))
-	for ii, key := range fields {
-		s := scanResults[ii].(*sql.NullString)
-		result[key] = s.String
-	}
-	return result, nil
-}
-
-func row2mapBytes(rows *core.Rows, types []*sql.ColumnType, fields []string) (map[string][]byte, error) {
-	var scanResults = make([]interface{}, len(fields))
-	for i := 0; i < len(fields); i++ {
-		var s sql.NullString
-		scanResults[i] = &s
-	}
-
-	if err := rows.Scan(scanResults...); err != nil {
-		return nil, err
-	}
-
-	result := make(map[string][]byte, len(fields))
-	for ii, key := range fields {
-		s := scanResults[ii].(*sql.NullString)
-		result[key] = []byte(s.String)
-	}
-	return result, nil
-}
-
-func (engine *Engine) scanStringInterface(rows *core.Rows, types []*sql.ColumnType) ([]interface{}, error) {
-	var scanResults = make([]interface{}, len(types))
+func (engine *Engine) scanStringInterface(rows *core.Rows, fields []string, types []*sql.ColumnType) ([]interface{}, error) {
+	scanResults := make([]interface{}, len(types))
 	for i := 0; i < len(types); i++ {
 		var s sql.NullString
 		scanResults[i] = &s
 	}
 
-	if err := engine.driver.Scan(&dialects.ScanContext{
-		DBLocation:   engine.DatabaseTZ,
-		UserLocation: engine.TZLocation,
-	}, rows, types, scanResults...); err != nil {
+	if err := engine.scan(rows, fields, types, scanResults...); err != nil {
 		return nil, err
 	}
 	return scanResults, nil
@@ -176,20 +144,24 @@ func (engine *Engine) scanStringInterface(rows *core.Rows, types []*sql.ColumnTy
 
 // scan is a wrap of driver.Scan but will automatically change the input values according requirements
 func (engine *Engine) scan(rows *core.Rows, fields []string, types []*sql.ColumnType, vv ...interface{}) error {
-	var scanResults = make([]interface{}, 0, len(types))
-	var replaces = make([]bool, 0, len(types))
+	scanResults := make([]interface{}, 0, len(types))
+	replaces := make([]bool, 0, len(types))
 	var err error
 	for _, v := range vv {
 		var replaced bool
 		var scanResult interface{}
-		if _, ok := v.(sql.Scanner); !ok {
-			var useNullable = true
-			if engine.driver.Features().SupportNullable {
-				nullable, ok := types[0].Nullable()
-				useNullable = ok && nullable
-			}
-
-			if useNullable {
+		switch t := v.(type) {
+		case *big.Float, *time.Time, *sql.NullTime:
+			scanResult = &sql.NullString{}
+			replaced = true
+		case sql.Scanner:
+			scanResult = t
+		case convert.Conversion:
+			scanResult = &sql.RawBytes{}
+			replaced = true
+		default:
+			nullable, ok := types[0].Nullable()
+			if !ok || nullable {
 				scanResult, replaced, err = genScanResultsByBeanNullable(v)
 			} else {
 				scanResult, replaced, err = genScanResultsByBean(v)
@@ -197,25 +169,22 @@ func (engine *Engine) scan(rows *core.Rows, fields []string, types []*sql.Column
 			if err != nil {
 				return err
 			}
-		} else {
-			scanResult = v
 		}
+
 		scanResults = append(scanResults, scanResult)
 		replaces = append(replaces, replaced)
 	}
 
-	var scanCtx = dialects.ScanContext{
+	if err = engine.driver.Scan(&dialects.ScanContext{
 		DBLocation:   engine.DatabaseTZ,
 		UserLocation: engine.TZLocation,
-	}
-
-	if err = engine.driver.Scan(&scanCtx, rows, types, scanResults...); err != nil {
+	}, rows, types, scanResults...); err != nil {
 		return err
 	}
 
 	for i, replaced := range replaces {
 		if replaced {
-			if err = convertAssign(vv[i], scanResults[i], scanCtx.DBLocation, engine.TZLocation); err != nil {
+			if err = convert.Assign(vv[i], scanResults[i], engine.DatabaseTZ, engine.TZLocation); err != nil {
 				return err
 			}
 		}
@@ -224,8 +193,8 @@ func (engine *Engine) scan(rows *core.Rows, fields []string, types []*sql.Column
 	return nil
 }
 
-func (engine *Engine) scanInterfaces(rows *core.Rows, types []*sql.ColumnType) ([]interface{}, error) {
-	var scanResultContainers = make([]interface{}, len(types))
+func (engine *Engine) scanInterfaces(rows *core.Rows, fields []string, types []*sql.ColumnType) ([]interface{}, error) {
+	scanResultContainers := make([]interface{}, len(types))
 	for i := 0; i < len(types); i++ {
 		scanResult, err := engine.driver.GenScanResult(types[i].DatabaseTypeName())
 		if err != nil {
@@ -233,51 +202,18 @@ func (engine *Engine) scanInterfaces(rows *core.Rows, types []*sql.ColumnType) (
 		}
 		scanResultContainers[i] = scanResult
 	}
-	if err := engine.driver.Scan(&dialects.ScanContext{
-		DBLocation:   engine.DatabaseTZ,
-		UserLocation: engine.TZLocation,
-	}, rows, types, scanResultContainers...); err != nil {
+	if err := engine.scan(rows, fields, types, scanResultContainers...); err != nil {
 		return nil, err
 	}
 	return scanResultContainers, nil
 }
 
-func (engine *Engine) row2sliceStr(rows *core.Rows, types []*sql.ColumnType, fields []string) ([]string, error) {
-	scanResults, err := engine.scanStringInterface(rows, types)
-	if err != nil {
-		return nil, err
-	}
-
-	var results = make([]string, 0, len(fields))
-	for i := 0; i < len(fields); i++ {
-		results = append(results, scanResults[i].(*sql.NullString).String)
-	}
-	return results, nil
-}
-
-func rows2maps(rows *core.Rows) (resultsSlice []map[string][]byte, err error) {
-	fields, err := rows.Columns()
-	if err != nil {
-		return nil, err
-	}
-	types, err := rows.ColumnTypes()
-	if err != nil {
-		return nil, err
-	}
-	for rows.Next() {
-		result, err := row2mapBytes(rows, types, fields)
-		if err != nil {
-			return nil, err
-		}
-		resultsSlice = append(resultsSlice, result)
-	}
-
-	return resultsSlice, nil
-}
+////////////////////
+// row -> map[string]interface{}
 
 func (engine *Engine) row2mapInterface(rows *core.Rows, types []*sql.ColumnType, fields []string) (map[string]interface{}, error) {
-	var resultsMap = make(map[string]interface{}, len(fields))
-	var scanResultContainers = make([]interface{}, len(fields))
+	resultsMap := make(map[string]interface{}, len(fields))
+	scanResultContainers := make([]interface{}, len(fields))
 	for i := 0; i < len(fields); i++ {
 		scanResult, err := engine.driver.GenScanResult(types[i].DatabaseTypeName())
 		if err != nil {
@@ -285,10 +221,7 @@ func (engine *Engine) row2mapInterface(rows *core.Rows, types []*sql.ColumnType,
 		}
 		scanResultContainers[i] = scanResult
 	}
-	if err := engine.driver.Scan(&dialects.ScanContext{
-		DBLocation:   engine.DatabaseTZ,
-		UserLocation: engine.TZLocation,
-	}, rows, types, scanResultContainers...); err != nil {
+	if err := engine.scan(rows, fields, types, scanResultContainers...); err != nil {
 		return nil, err
 	}
 
@@ -300,4 +233,207 @@ func (engine *Engine) row2mapInterface(rows *core.Rows, types []*sql.ColumnType,
 		resultsMap[key] = res
 	}
 	return resultsMap, nil
+}
+
+// ScanInterfaceMap scan result from *core.Rows and return a map
+func (engine *Engine) ScanInterfaceMap(rows *core.Rows) (map[string]interface{}, error) {
+	fields, err := rows.Columns()
+	if err != nil {
+		return nil, err
+	}
+	types, err := rows.ColumnTypes()
+	if err != nil {
+		return nil, err
+	}
+
+	return engine.row2mapInterface(rows, types, fields)
+}
+
+// ScanInterfaceMaps scan results from *core.Rows and return a slice of map
+func (engine *Engine) ScanInterfaceMaps(rows *core.Rows) (resultsSlice []map[string]interface{}, err error) {
+	fields, err := rows.Columns()
+	if err != nil {
+		return nil, err
+	}
+	types, err := rows.ColumnTypes()
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		result, err := engine.row2mapInterface(rows, types, fields)
+		if err != nil {
+			return nil, err
+		}
+		resultsSlice = append(resultsSlice, result)
+	}
+	if rows.Err() != nil {
+		return nil, rows.Err()
+	}
+
+	return resultsSlice, nil
+}
+
+////////////////////
+// row -> map[string]string
+
+func (engine *Engine) row2mapStr(rows *core.Rows, types []*sql.ColumnType, fields []string) (map[string]string, error) {
+	scanResults := make([]interface{}, len(fields))
+	for i := 0; i < len(fields); i++ {
+		var s sql.NullString
+		scanResults[i] = &s
+	}
+
+	if err := engine.driver.Scan(&dialects.ScanContext{
+		DBLocation:   engine.DatabaseTZ,
+		UserLocation: engine.TZLocation,
+	}, rows, types, scanResults...); err != nil {
+		return nil, err
+	}
+
+	result := make(map[string]string, len(fields))
+	for i, key := range fields {
+		s := scanResults[i].(*sql.NullString)
+		if s.String == "" {
+			result[key] = ""
+			continue
+		}
+
+		if schemas.TIME_TYPE == engine.dialect.ColumnTypeKind(types[i].DatabaseTypeName()) {
+			t, err := convert.String2Time(s.String, engine.DatabaseTZ, engine.TZLocation)
+			if err != nil {
+				return nil, err
+			}
+			result[key] = t.Format("2006-01-02 15:04:05")
+		} else {
+			result[key] = s.String
+		}
+	}
+	return result, nil
+}
+
+// ScanStringMap scan results from *core.Rows and return a map
+func (engine *Engine) ScanStringMap(rows *core.Rows) (map[string]string, error) {
+	fields, err := rows.Columns()
+	if err != nil {
+		return nil, err
+	}
+	types, err := rows.ColumnTypes()
+	if err != nil {
+		return nil, err
+	}
+	return engine.row2mapStr(rows, types, fields)
+}
+
+// ScanStringMaps scan results from *core.Rows and return a slice of map
+func (engine *Engine) ScanStringMaps(rows *core.Rows) (resultsSlice []map[string]string, err error) {
+	fields, err := rows.Columns()
+	if err != nil {
+		return nil, err
+	}
+	types, err := rows.ColumnTypes()
+	if err != nil {
+		return nil, err
+	}
+
+	for rows.Next() {
+		result, err := engine.row2mapStr(rows, types, fields)
+		if err != nil {
+			return nil, err
+		}
+		resultsSlice = append(resultsSlice, result)
+	}
+	if rows.Err() != nil {
+		return nil, rows.Err()
+	}
+
+	return resultsSlice, nil
+}
+
+////////////////////
+// row -> map[string][]byte
+
+func convertMapStr2Bytes(m map[string]string) map[string][]byte {
+	r := make(map[string][]byte, len(m))
+	for k, v := range m {
+		r[k] = []byte(v)
+	}
+	return r
+}
+
+func (engine *Engine) scanByteMaps(rows *core.Rows) (resultsSlice []map[string][]byte, err error) {
+	fields, err := rows.Columns()
+	if err != nil {
+		return nil, err
+	}
+	types, err := rows.ColumnTypes()
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		result, err := engine.row2mapStr(rows, types, fields)
+		if err != nil {
+			return nil, err
+		}
+		resultsSlice = append(resultsSlice, convertMapStr2Bytes(result))
+	}
+	if rows.Err() != nil {
+		return nil, rows.Err()
+	}
+
+	return resultsSlice, nil
+}
+
+////////////////////
+// row -> []string
+
+func (engine *Engine) row2sliceStr(rows *core.Rows, types []*sql.ColumnType, fields []string) ([]string, error) {
+	scanResults, err := engine.scanStringInterface(rows, fields, types)
+	if err != nil {
+		return nil, err
+	}
+
+	results := make([]string, 0, len(fields))
+	for i := 0; i < len(fields); i++ {
+		results = append(results, scanResults[i].(*sql.NullString).String)
+	}
+	return results, nil
+}
+
+// ScanStringSlice scan results from *core.Rows and return a slice of one row
+func (engine *Engine) ScanStringSlice(rows *core.Rows) ([]string, error) {
+	fields, err := rows.Columns()
+	if err != nil {
+		return nil, err
+	}
+	types, err := rows.ColumnTypes()
+	if err != nil {
+		return nil, err
+	}
+
+	return engine.row2sliceStr(rows, types, fields)
+}
+
+// ScanStringSlices scan results from *core.Rows and return a slice of all rows
+func (engine *Engine) ScanStringSlices(rows *core.Rows) (resultsSlice [][]string, err error) {
+	fields, err := rows.Columns()
+	if err != nil {
+		return nil, err
+	}
+	types, err := rows.ColumnTypes()
+	if err != nil {
+		return nil, err
+	}
+
+	for rows.Next() {
+		record, err := engine.row2sliceStr(rows, types, fields)
+		if err != nil {
+			return nil, err
+		}
+		resultsSlice = append(resultsSlice, record)
+	}
+	if rows.Err() != nil {
+		return nil, rows.Err()
+	}
+
+	return resultsSlice, nil
 }
