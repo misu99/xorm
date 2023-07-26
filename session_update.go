@@ -151,7 +151,7 @@ func (session *Session) Update(bean interface{}, condiBean ...interface{}) (int6
 		return 0, err
 	}
 
-	var autoCond builder.Cond
+	var autoCond builder.Cond = builder.NewCond()
 	if len(condiBean) > 0 {
 		autoCond, err = session.genAutoCond(condiBean[0])
 		if err != nil {
@@ -159,13 +159,7 @@ func (session *Session) Update(bean interface{}, condiBean ...interface{}) (int6
 		}
 	} else if table != nil {
 		if col := table.DeletedColumn(); col != nil && !session.statement.GetUnscoped() { // tag "deleted" is enabled
-			autoCond1 := session.statement.CondDeleted(col)
-
-			if autoCond == nil {
-				autoCond = autoCond1
-			} else {
-				autoCond = autoCond.And(autoCond1)
-			}
+			autoCond = autoCond.And(session.statement.CondDeleted(col))
 		}
 	}
 
