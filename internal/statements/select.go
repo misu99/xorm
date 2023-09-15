@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"strings"
 
-	"xorm.io/xorm/schemas"
+	"github.com/misu99/xorm/schemas"
 )
 
 // Select replace select
@@ -39,9 +39,23 @@ func (statement *Statement) Cols(columns ...string) *Statement {
 	return statement
 }
 
+// CountColumnMap generate "col1, col2" statement
+func (statement *Statement) CountCols(columns ...string) *Statement {
+	cols := col2NewCols(columns...)
+	for _, nc := range cols {
+		statement.CountColumnMap.Add(nc)
+	}
+	return statement
+}
+
 // ColumnStr returns column string
 func (statement *Statement) ColumnStr() string {
 	return statement.dialect.Quoter().Join(statement.ColumnMap, ", ")
+}
+
+// CountColumnStr returns count column string
+func (statement *Statement) CountColumnStr() string {
+	return statement.dialect.Quoter().Join(statement.CountColumnMap, ", ")
 }
 
 // AllCols update use only: update all columns

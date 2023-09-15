@@ -10,12 +10,12 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/misu99/xorm/caches"
+	"github.com/misu99/xorm/convert"
+	"github.com/misu99/xorm/internal/statements"
+	"github.com/misu99/xorm/internal/utils"
+	"github.com/misu99/xorm/schemas"
 	"xorm.io/builder"
-	"xorm.io/xorm/caches"
-	"xorm.io/xorm/convert"
-	"xorm.io/xorm/internal/statements"
-	"xorm.io/xorm/internal/utils"
-	"xorm.io/xorm/schemas"
 )
 
 const (

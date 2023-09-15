@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/misu99/xorm/schemas"
 	"xorm.io/builder"
-	"xorm.io/xorm/schemas"
 )
 
 // TableName return current tableName

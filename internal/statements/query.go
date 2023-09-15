@@ -11,9 +11,9 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/misu99/xorm/internal/utils"
+	"github.com/misu99/xorm/schemas"
 	"xorm.io/builder"
-	"xorm.io/xorm/internal/utils"
-	"xorm.io/xorm/schemas"
 )
 
 // GenQuerySQL generate query SQL
@@ -147,6 +147,8 @@ func (statement *Statement) GenCountSQL(beans ...interface{}) (string, []interfa
 	if len(selectSQL) <= 0 {
 		if statement.IsDistinct {
 			selectSQL = fmt.Sprintf("count(DISTINCT %s)", statement.ColumnStr())
+		} else if statement.CountColumnStr() != "" {
+			selectSQL = fmt.Sprintf("count(%s)", statement.CountColumnStr())
 		} else if statement.ColumnStr() != "" {
 			selectSQL = fmt.Sprintf("count(%s)", statement.ColumnStr())
 		} else {

@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/misu99/xorm/schemas"
 	"github.com/stretchr/testify/assert"
-	"xorm.io/xorm/schemas"
 )
 
 type dialect struct {

@@ -1,4 +1,4 @@
-module xorm.io/xorm
+module github.com/misu99/xorm
 
 go 1.16
 

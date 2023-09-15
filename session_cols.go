@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"xorm.io/xorm/schemas"
+	"github.com/misu99/xorm/schemas"
 )
 
 func setColumnInt(bean interface{}, col *schemas.Column, t int64) {
@@ -90,6 +90,12 @@ func (session *Session) Select(str string) *Session {
 // Cols provides some columns to special
 func (session *Session) Cols(columns ...string) *Session {
 	session.statement.Cols(columns...)
+	return session
+}
+
+// CountCols provides some columns to special count
+func (session *Session) CountCols(columns ...string) *Session {
+	session.statement.CountCols(columns...)
 	return session
 }
 

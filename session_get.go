@@ -13,11 +13,11 @@ import (
 	"strconv"
 	"time"
 
-	"xorm.io/xorm/caches"
-	"xorm.io/xorm/convert"
-	"xorm.io/xorm/core"
-	"xorm.io/xorm/internal/utils"
-	"xorm.io/xorm/schemas"
+	"github.com/misu99/xorm/caches"
+	"github.com/misu99/xorm/convert"
+	"github.com/misu99/xorm/core"
+	"github.com/misu99/xorm/internal/utils"
+	"github.com/misu99/xorm/schemas"
 )
 
 var (

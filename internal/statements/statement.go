@@ -13,14 +13,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/misu99/xorm/contexts"
+	"github.com/misu99/xorm/convert"
+	"github.com/misu99/xorm/dialects"
+	"github.com/misu99/xorm/internal/json"
+	"github.com/misu99/xorm/internal/utils"
+	"github.com/misu99/xorm/schemas"
+	"github.com/misu99/xorm/tags"
 	"xorm.io/builder"
-	"xorm.io/xorm/contexts"
-	"xorm.io/xorm/convert"
-	"xorm.io/xorm/dialects"
-	"xorm.io/xorm/internal/json"
-	"xorm.io/xorm/internal/utils"
-	"xorm.io/xorm/schemas"
-	"xorm.io/xorm/tags"
 )
 
 var (
@@ -74,6 +74,7 @@ type Statement struct {
 	CheckVersion    bool
 	unscoped        bool
 	ColumnMap       columnMap
+	CountColumnMap  columnMap
 	OmitColumnMap   columnMap
 	MustColumnMap   map[string]bool
 	NullableMap     map[string]bool

@@ -11,12 +11,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/misu99/xorm/caches"
+	"github.com/misu99/xorm/dialects"
+	"github.com/misu99/xorm/names"
+	"github.com/misu99/xorm/schemas"
+	"github.com/misu99/xorm/tags"
 	"github.com/stretchr/testify/assert"
-	"xorm.io/xorm/caches"
-	"xorm.io/xorm/dialects"
-	"xorm.io/xorm/names"
-	"xorm.io/xorm/schemas"
-	"xorm.io/xorm/tags"
 
 	_ "github.com/mattn/go-sqlite3"
 )

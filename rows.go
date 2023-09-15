@@ -9,8 +9,8 @@ import (
 	"fmt"
 	"reflect"
 
+	"github.com/misu99/xorm/core"
 	"xorm.io/builder"
-	"xorm.io/xorm/core"
 )
 
 // Rows rows wrapper a rows to

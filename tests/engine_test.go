@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"xorm.io/xorm"
-	"xorm.io/xorm/schemas"
+	"github.com/misu99/xorm"
+	"github.com/misu99/xorm/schemas"
 
 	_ "gitee.com/travelliu/dm"
 	_ "github.com/denisenkom/go-mssqldb"

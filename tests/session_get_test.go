@@ -12,11 +12,11 @@ import (
 	"testing"
 	"time"
 
-	"xorm.io/xorm"
-	"xorm.io/xorm/contexts"
-	"xorm.io/xorm/convert"
-	"xorm.io/xorm/dialects"
-	"xorm.io/xorm/schemas"
+	"github.com/misu99/xorm"
+	"github.com/misu99/xorm/contexts"
+	"github.com/misu99/xorm/convert"
+	"github.com/misu99/xorm/dialects"
+	"github.com/misu99/xorm/schemas"
 
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"

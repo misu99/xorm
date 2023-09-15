@@ -9,8 +9,8 @@ import (
 	"strconv"
 	"strings"
 
-	"xorm.io/xorm/internal/utils"
-	"xorm.io/xorm/schemas"
+	"github.com/misu99/xorm/internal/utils"
+	"github.com/misu99/xorm/schemas"
 )
 
 // ConvertIDSQL converts SQL with id
