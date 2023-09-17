@@ -147,7 +147,7 @@ func (statement *Statement) GenCountSQL(beans ...interface{}) (string, []interfa
 	if len(selectSQL) <= 0 {
 		if statement.IsDistinct {
 			selectSQL = fmt.Sprintf("count(DISTINCT %s)", statement.ColumnStr())
-		} else if statement.CountColumnStr() != "" {
+		} else if statement.CountColumnStr() != "" && statement.GroupByStr == "" {
 			selectSQL = fmt.Sprintf("count(%s)", statement.CountColumnStr())
 		} else if statement.ColumnStr() != "" {
 			selectSQL = fmt.Sprintf("count(%s)", statement.ColumnStr())
